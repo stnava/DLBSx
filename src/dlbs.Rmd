@@ -1,5 +1,5 @@
 ---
-title: 'DLBS: AV45 and other stuff'
+title: 'Data-driven evidence that amyloid accumulation in the brain alters lifespan trajectory of aging'
 author: "Brian B. Avants"
 date: "August 17, 2016"
 output: html_document
@@ -53,70 +53,98 @@ haveAmy = !is.na( fnmat[,1] )
 collect segmentation volumes
 
 ```{r getMatsGlobalCor2}
-segvols = matrix( nrow=sum(haveAmy), ncol=6 )
-ct = 1
-for ( i in which( haveAmy ) )
+if ( ! exists( "segvols" ) )
   {
-  seg = antsImageRead( fnmat[i,4] )
-  volelt = sqrt( sum( antsGetSpacing( seg )^2 ) )
-  for ( k in 1:6 ) segvols[ ct, k ] = volelt * sum( seg == k )
-  ct = ct + 1
+  segvols = matrix( nrow=sum(haveAmy), ncol=6 )
+  ct = 1
+  for ( i in which( haveAmy ) )
+    {
+    seg = antsImageRead( fnmat[i,4] )
+    volelt = sqrt( sum( antsGetSpacing( seg )^2 ) )
+    for ( k in 1:6 ) segvols[ ct, k ] = volelt * sum( seg == k )
+    ct = ct + 1
+    }
+  segvols = data.frame( segvols )
+  colnames( segvols ) = c("CSF","GM","WM","DGM","BrainStem","Cerebellum")
   }
-segvols = data.frame( segvols )
-colnames( segvols ) = c("CSF","GM","WM","DGM","BrainStem","Cerebellum")
 ```
 
 Convert scalar images to matrices.
 
 ```{r getMats}
-cmask = thresholdImage( templateSeg, 2, 2 )
-wmask = thresholdImage( templateSeg, 3, 3 )
-dmask = thresholdImage( templateSeg, 4, 4 )
-allmask = thresholdImage( templateSeg, 1, 6 )
-mask14 = thresholdImage( templateSeg, 1, 4 )
-amat = imagesToMatrix( fnmat[haveAmy,1], mask14 )
-tmat = imagesToMatrix( fnmat[haveAmy,2], cmask )
+if ( ! exists("amat") )
+{
+res = rep( 2, 3 ) # resolution at which to do study
+smth = rep( 1, 3 )
+cmask = thresholdImage( templateSeg, 2, 2 ) %>% resampleImage( res )
+wmask = thresholdImage( templateSeg, 3, 3 ) %>% resampleImage( res )
+dmask = thresholdImage( templateSeg, 4, 4 ) %>% resampleImage( res )
+allmask = thresholdImage( templateSeg, 1, 6 ) %>% resampleImage( res )
+mask14 = thresholdImage( templateSeg, 1, 4 ) %>% resampleImage( res )
+alist = imageFileNames2ImageList( fnmat[haveAmy,1] )
+amat = imageListToMatrix( alist, mask14, sigma = smth  )
+tlist = imageFileNames2ImageList( fnmat[haveAmy,2] )
+tmat = imageListToMatrix( tlist, cmask, sigma = smth )
+jlist = imageFileNames2ImageList( fnmat[haveAmy,3] )
+jmat = imageListToMatrix( jlist, allmask )
+rm( jlist, tlist, alist )
+for ( i in 1:10 ) gc()
 # jwmat = imagesToMatrix( fnmat[haveAmy,3], wmask )
 # jdmat = imagesToMatrix( fnmat[haveAmy,3], dmask )
-jmat = imagesToMatrix( fnmat[haveAmy,3], allmask )
+}
 ```
 
 
 how many clusters in the amyloid data?
 ```{r pamamy,eval=TRUE}
+library( ggplot2 )
 amatRMeans = rowMeans( amat )
 hist( amatRMeans )
 k=80
-# scanner = sparseDecom2(
-#  inmatrix = list( scale(amat), scale(jmat) ),
-#  inmask   = c( mask14, allmask ),
-#  sparseness = c(0.05,0.05),
-#  nvecs = k, its = 10, cthresh=c(50,50) )
+if ( ! exists( "scanner" )  ) {
+  lowdecom = sparseDecom2(
+    inmatrix = list( scale(amat), scale(jmat) ),
+    inmask   = c( mask14, allmask ), verbose=F,
+    sparseness = c( 0.1, 0.1), smooth = 0.5,
+    mycoption = 0, perms=0,
+    nvecs = 4, its = 15, cthresh = c( 10, 10 ) )
+  names(lowdecom)[3]="v"
+  }
 # seconds
-lowdecom = rsvd::rsvd( (amat), k, nu=0, p=10, sdist='normal' )
-# spmat  = sparseDistanceMatrix( amat,  k = k, kmetric = 'cor' )
-# mypcSsvd =  irlba( spmat , nv=maxk, nu=0, center=colMeans(spmat) , right_only=TRUE)
+# lowdecom = rsvd::rsvd( (amat), k, nu=0, p=10, sdist='normal' )
+# spmat  = sparseDistanceMatrix( amat,  k = 25, kmetric = 'cor' )
+# lowdecom =  irlba::irlba( spmat , nv=100, nu=0, center=colMeans(spmat) , right_only=TRUE)
+tempimg = abs( makeImage( mask14, lowdecom$v[,3] ) ) %>%
+  iMath("Normalize")
+plot( template  %>% resampleImage( res ), tempimg, nslices=20,
+      ncolumns=10, axis=2, window.overlay=c(0.1,1) )
 #
 # lowdecom = irlba::irlba( amat, k, nu=0 ) # minutes
 # plot( ts( lowdecom$d[2:k] ) )
 krange = 1:6
-criterion = "ch"
 lowmat = amat %*% ( lowdecom$v )
-pk <- fpc::pamk( lowmat, 
-      krange = krange, criterion = criterion)
+# lowmat = cbind( amat %*% ( scanner$eig1[,] ) )
+#                tmat %*% ( scanner$eig2[,1:4] ) )
+pk <- fpc::pamk( lowmat, krange = krange)
 hcl = hclust( dist( lowmat ) )
 myclusts = cutree( hcl, k = 2 )
+knitr::kable( data.frame( table(myclusts) ) )
 myclusts = pk$pamobject$clustering
 knitr::kable( data.frame( table(myclusts) ) )
 lowAmy <- data.frame( amy = amatRMeans[myclusts==1] )
-highAmy <- data.frame( amy = amatRMeans[myclusts==2]  )
-lowAmy$status <- 'highAmy'
-highAmy$status <- 'lowAmy'
-amyStatus <- rbind(lowAmy, highAmy)
-library( ggplot2 )
+lowAmy$status <- 'lowAmy'
+amyStatus <- rbind( lowAmy )
+uclusts = unique( myclusts )[-1]
+print( paste( 1, mean(amatRMeans[myclusts==1] ) ))
+for ( k in uclusts )
+  {
+  highAmy <- data.frame( amy = amatRMeans[myclusts==k]  )
+  highAmy$status <- paste('Amy',k,sep='')
+  amyStatus = rbind( amyStatus, highAmy )
+  print( paste( k, mean(amatRMeans[myclusts==k] ) ))
+  }
 ggplot( amyStatus, aes(amy, fill = status)) + geom_density(alpha = 0.2)
-print( paste( mean(amatRMeans[myclusts==1] ), 
-              mean(amatRMeans[myclusts==2] )) )
+amat2 = amat %*% lowdecom$v
 ```
 
 
@@ -126,54 +154,64 @@ correlate the means of these matrices and look at a simple regression
 ```{r getMatsGlobalCor}
 temp = cbind( 
   rowMeans( amat ),
-  rowMeans( tmat ),
+  rowMeans( tmat ) )
 #  rowMeans( jwmat ),
 #  rowMeans( jdmat ),
-  rowMeans( jmat ) )
-colnames( temp ) = c( "Amyloid", "Thickness","AllJac" ) #  "WJac", "DGMJac", 
+#  rowMeans( jmat ) )
+colnames( temp ) = c( "Amyloid", "Thickness" ) # "WJac", "DGMJac", 
 inds = c(2,3,4,9,11:ncol(demog)) # base and cognition
-locdemog = data.frame( demog[haveAmy, inds], temp, scale(segvols), clust=factor( myclusts ) )
-sel=locdemog$Amyloid<1.26
-sel=myclusts==1
-locdemogSub1 = locdemog[ sel,]
-locdemogSub2 = locdemog[!sel,]
-formchar="~ Age + Thickness + factor(Gender) +
-            MMSE + 
-            RAVENS_Number.correct_1 +
-#            HOP_immediate.recall_1 +
-            HOP_delayed.recognition.acc_1 +
-            HOP_delayed.recall_1 + 
-            DC_total_1 +
-#           CANTAB_SST_SSRT_last_half_1 + 
-#            LNS_Total.Correct_1 +
-            BrainStem + Cerebellum"
-myform = as.formula(paste("Amyloid", formchar ))
-mdl1 = lm( myform, data = locdemogSub1 )
- #GM + CSF + WM + BrainStem + Cerebellum, data = locdemogSub1 )
-print( summary( mdl1 ) )
-visreg::visreg( mdl1, "BrainStem" )
-visreg::visreg( mdl1, "Cerebellum" )
-visreg::visreg( mdl1, "Thickness" )
-if ( sum(!sel) > 0 )
+BV = rowSums( segvols )
+locdemog = data.frame( demog[haveAmy, inds], temp,  BV=BV, 
+  psych::winsor(segvols,0.01), clust=factor( myclusts ) )
+# for ( k in unique( myclusts ) )
   {
-  mdl2 = lm( myform, data = locdemogSub2 )
-  print( summary( mdl2 ) )
-  visreg::visreg( mdl2, "HOP_delayed.recall_1" )
+  sel = myclusts != 0
+  locdemogSub1 = locdemog[ sel,]
+  formchar="~ Age + Thickness + factor(Gender) +  MMSE + 
+#              RAVENS_Number.correct_1 +
+#              HOP_immediate.recall_1 +
+#              HOP_delayed.recognition.acc_1 +
+              HOP_delayed.recall_1 + 
+              DC_total_1 +
+              CANTAB_SST_SSRT_last_half_1 + BV +
+#              LNS_Total.Correct_1 +
+    WM + GM " # + BrainStem + Cerebellum" 
+  myform = as.formula(paste("Amyloid", formchar ))
+  mdl1 = glm( myform, data = locdemogSub1, family='gaussian' )
+   #GM + CSF + WM + BrainStem + Cerebellum, data = locdemogSub1 )
+  print( summary( mdl1 ) )
+  visreg::visreg( mdl1, "GM" )
+  visreg::visreg( mdl1, "WM" )
   }
 ```
 
+
+
+do a sparse decom of the tmat
+
+```{r tmatdecom,eval=FALSE}
+# sel = locdemog$Age > 58
+tspmat  = sparseDistanceMatrix( tmat[,],  k = 25, kmetric = 'cor' )
+lowdecom =  irlba::irlba( tspmat , nv=200, nu=0, 
+  center=colMeans(tspmat) , right_only=TRUE)
+tempimg = abs( makeImage( mask14, lowdecom$v[,6] ) ) %>%
+  iMath("Normalize")
+plot( template  %>% resampleImage( res ), tempimg, nslices=20,
+      ncolumns=10, axis=2, window.overlay=c(0.21,1) )
+# amat2 = amat %*% lowdecom$v
+tmat2 = tmat %*% lowdecom$v
+```
 
 Do a higher resolution map of local amyloid.
 
 ```{r amyMatRegression}
 formchar="  Age + factor(Gender) +
-            MMSE + clust +
+            MMSE +
             RAVENS_Number.correct_1 +
             HOP_delayed.recognition.acc_1 +
             HOP_delayed.recall_1 + 
-            DC_total_1 +
-            BrainStem + Cerebellum"
-myform = as.formula(paste("amat~", formchar ))
+            DC_total_1 + WM  + Thickness + BrainStem "
+myform = as.formula(paste("amat2~", formchar ))
 mdl = lm( myform, data = locdemog )
 bmdl = bigLMStats( mdl )
 for ( nm in rownames( bmdl$beta.pval ) ) {
@@ -181,7 +219,7 @@ for ( nm in rownames( bmdl$beta.pval ) ) {
   print( paste( nm, min( p.adjust( bmdl$beta.pval[nm,], 'none' ) ), mnbh ) )
   }
 # wjac is strong ... let's look
-nm = "clust2"
+nm = "Thickness"
 wjtstat = makeImage( mask14,  bmdl$beta.t[nm,] )
 ```
 
@@ -193,77 +231,117 @@ rp =            matrix( c(90,0,180), ncol = 3 )
 rp = rbind( rp, matrix( c(90,180,180), ncol = 3 ) )
 rp = rbind( rp, matrix( c(270,270,270), ncol = 3 ) ) # top view
 rp = rbind( rp, matrix( c(270,90,90), ncol = 3 ) ) # keeper, bottom view
-rng = c( 5, max(wjtstat ) )
-antsrVol( template, list( wjtstat*(1) ), overlayLimits = rng, 
+rng = c( 3, max( abs( wjtstat ) ) )
+volfn = path.expand( "~/Downloads/temp2" )
+antsrVol( template %>% resampleImage(res), list( abs(wjtstat) ), overlayLimits = rng, 
           intensityTruncation = c(0.2,0.8), rotationParams = rp,
           magnificationFactor = 2.5,
-          antspath = ap, filename = "~/Downloads/temp" )
+          antspath = ap, filename = volfn )
+volfn = paste( volfn, '.png', sep='' )
 ```
 
 Add the figure we just made.
 
 ```{r echo=FALSE, out.width='100%'}
-knitr::include_graphics( path.expand("~/Downloads/temp.png") )
+knitr::include_graphics( volfn )
 ```
 
 Plot the stat.
 
 ```{r jMatRegressionViz0}
-plot( template, wjtstat, nslices=20, ncolumns=10, axis=2, window.overlay=rng )
+rng = c(3,max(abs(wjtstat)))
+plot( template  %>% resampleImage( res ), wjtstat, nslices=20,
+      ncolumns=10, axis=2, window.overlay=rng )
+plot( template  %>% resampleImage( res ), wjtstat*(-1), nslices=20,
+      ncolumns=10, axis=2, window.overlay=rng )
 ```
 
+Define a subset of the population for which there is no difference in age 
+and for which there is no difference in MMSE.
 
+```{r agematch}
+locsel = locdemog$Age >= 50
+myclustsLevs = unique( myclusts )
+for ( k in myclustsLevs )
+  {
+  ksel = myclusts == k
+  print( paste("Cluster",k,"MeanAmy",mean(locdemog$Amyloid[ksel])))
+  print( range(locdemog$Age[ksel] ))
+  print( paste(
+    t.test( locdemog[locsel & locdemog$clust==1,]$Age, 
+          locdemog[locsel & locdemog$clust==k,]$Age )$p.value,
+    t.test( locdemog[locsel & locdemog$clust==1,]$MMSE, 
+          locdemog[locsel & locdemog$clust==k,]$MMSE )$p.value,
+    t.test( locdemog[locsel & locdemog$clust==1,]$Amyloid, 
+          locdemog[locsel & locdemog$clust==k,]$Amyloid )$p.value ))
+  }
+```
 
 Do a higher resolution map of jacobian.
 
-```{r jMatRegression,eval=FALSE}
-formchar="  Age + factor(Gender) +
-            MMSE +
+```{r jMatRegression,eval=TRUE}
+formchar="  MMSE +
 #            RAVENS_Number.correct_1 +
 #            HOP_delayed.recognition.acc_1 +
 #            HOP_delayed.recall_1 + 
-            DC_total_1 +
-            BrainStem + Cerebellum"
-myform = as.formula(paste("tmat~clust*Age+", formchar ))
-mdl = lm( myform, data = locdemog )
+#            DC_total_1 
+            BrainStem + Cerebellum + 
+  Variate000 +Variate001  "
+tnm = "clust"
+locsel = locdemog$Age >= 0
+myform = paste( "",tnm," + Age + factor(Gender)+",formchar )
+myform2 = as.formula(paste("tmat[locsel,]~", myform ))
+locdemog2 = cbind( locdemog, amat2 )
+mdl = lm( myform2, data = locdemog2[locsel , ] )
 bmdl = bigLMStats( mdl )
 for ( nm in rownames( bmdl$beta.pval ) ) {
   mnbh = min( p.adjust( bmdl$beta.pval[nm,], 'holm' ) )
-  print( paste( nm, min( p.adjust( bmdl$beta.pval[nm,], 'none' ) ), mnbh ) )
+  print( paste( nm, 
+    min( p.adjust( bmdl$beta.pval[nm,], 'none' ) ), mnbh ) )
   }
 # wjac is strong ... let's look
-nm = "clust2"
-amyjtstat = makeImage( cmask, bmdl$beta.t[nm,] )
+tnm=paste(tnm,"2",sep='')
+# tnm="Age"
+if ( sum( cmask ) == length(bmdl$beta.t[tnm,]) )
+  amyjtstat = makeImage( cmask, bmdl$beta.t[tnm,] )
+if ( sum( allmask ) == length(bmdl$beta.t[tnm,]) )
+  amyjtstat = makeImage( allmask, bmdl$beta.t[tnm,] )
+if ( sum( mask14 ) == length(bmdl$beta.t[tnm,]) )
+  amyjtstat = makeImage( mask14, bmdl$beta.t[tnm,] )
+antsImageWrite( amyjtstat, "~/Downloads/temp.nii.gz")
 print( range( amyjtstat ) )
 ```
 
 
 Render the thing on the thing.
 
-```{r renstat0,eval=FALSE}
-rng = c( 2, max( abs( amyjtstat ) ) )
-antsrVol( template, list( abs(amyjtstat) ), overlayLimits = rng, 
+```{r renstat0,eval=TRUE}
+rng = c( 4, max( abs( amyjtstat ) ) )
+antsrVol( template %>% resampleImage( res ), 
+          list( abs(amyjtstat) ), overlayLimits = rng, 
           intensityTruncation = c(0.2,0.8), rotationParams = rp,
           magnificationFactor = 2.5,
-          antspath = ap, filename = "~/Downloads/tempJ" )
+          antspath = ap, filename = "~/Downloads/tempT" )
 ```
 
 slice plot 
 
-```{r jMatRegressionViz,eval=F}
-plot( template, abs(amyjtstat), nslices=20, ncolumns=10, axis=2,    
-      window.overlay=rng )
+```{r jMatRegressionViz,eval=TRUE}
+rng = c( 3, max( abs( amyjtstat ) ) )
+plot( template %>% resampleImage( res ), abs(amyjtstat), 
+ nslices=20, ncolumns=10, axis=2, window.overlay=rng )
 ```
 
 Plot the max stat.
 
-```{r maxjstat,eval=FALSE}
-nm="Amyloid"
-jvox = rowMeans( tmat[, bmdl$beta.pval[nm,] < 0.01 ] )
-vdemog = data.frame( voxel = jvox, locdemog )
-myform = as.formula(paste("voxel~Amyloid+", formchar ))
-mdl = lm( myform, data = vdemog )
-visreg::visreg( mdl, nm )
+```{r maxjstat,eval=TRUE}
+sel = bmdl$beta.pval[nm,] < 1.e-4
+print( sum( sel ) )
+jvox = rowMeans( tmat[, sel ] )
+vdemog = data.frame( voxel = jvox, locdemog2 )
+myform2 = as.formula(paste("voxel~ ", myform ))
+mdl = lm( myform2, data = vdemog )
+visreg::visreg( mdl, tnm  )
 ```
 
 
